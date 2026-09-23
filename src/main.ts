@@ -1,567 +1,634 @@
 import "./styles.css";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { mount, toast } from "./ui/dom";
+import { renderUI } from "./ui/render";
+import { Store } from "./state";
+import { WindowManager } from "./window";
+import { LocalCamera } from "./media/camera";
+import { Signal, VideoMesh, generateRoomCode, normalizeRoomCode } from "./network";
+import { watchGameState } from "./game/gameWatcher";
+import type { MediaProvider, Player, RoomMode, Screen, Tile } from "./types";
+import { isSeenByAnyone, type RoleId } from "./roles";
 
-import { Signal, type SignalHandlers } from "./net";
-import { Mesh, type MeshHandlers } from "./rtc";
-import { EFFECTS, ROLES, role, type RoleId } from "./roles";
-import { createTile, mount, overlaySize, toast, type Refs, type Tile } from "./ui";
+/** bombanana — обычная комната на троих; free — просто видеозвонок до 8 человек. */
+const ROOM_CAPACITY: Record<RoomMode, number> = { bombanana: 3, free: 8 };
 
-type Screen = "home" | "lobby" | "game";
-type Phase = "lobby" | "game";
+async function bootstrap() {
+  const root = document.getElementById("app");
+  if (!root) throw new Error("Root element #app not found");
 
-interface Player {
-  id: string;
-  name: string;
-  role: RoleId | null;
-}
+  const refs = mount(root);
+  const store = new Store();
+  const win = new WindowManager();
+  const camera = new LocalCamera();
+  const tiles = new Map<string, Tile>();
 
-const state = {
-  screen: "home" as Screen,
-  phase: "lobby" as Phase,
-  round: 1,
-  myId: "",
-  hostId: "",
-  name: "Обезьяна",
-  players: [] as Player[],
-  /** false — клики проваливаются в игру под оверлеем. */
-  interactive: true,
-};
+  let signal: Signal | null = null;
+  let mesh: VideoMesh | null = null;
+  // На гостевой стороне ростер/sdp-ice могут прийти раньше, чем setupMesh()
+  // успеет создать mesh (сеть/микрозадачи не гарантируют порядок onHello
+  // относительно первого onPeers/onData) — без буфера такой сигнал молча
+  // терялся бы без повтора, и у гостя навсегда не открывалась бы связь с кем-то.
+  let pendingPeers: string[] | null = null;
+  const pendingSignals: Array<{ from: string; data: any }> = [];
 
-let refs: Refs;
-let signal: Signal | null = null;
-let mesh: Mesh | null = null;
-let hosting = false;
-let lobbyAddr = "";
-let peerOrder: string[] = [];
-let overlayWidth = 0;
+  // Видео реальных пиров и их состояние соединения — вне Store, это не сериализуемые данные.
+  const remoteStreams = new Map<string, MediaStream>();
+  const conn = new Map<string, RTCPeerConnectionState>();
 
-/** То, что реально уходит в сеть. Живёт весь сеанс, трек внутри подменяется. */
-const outStream = new MediaStream();
-const tiles = new Map<string, Tile>();
-const streams = new Map<string, MediaStream>();
-const conn = new Map<string, RTCPeerConnectionState>();
+  const media: MediaProvider = {
+    streamFor(id) {
+      if (id === store.current.myId) return camera.stream;
+      return remoteStreams.get(id) ?? null;
+    },
+    connFor(id) {
+      return conn.get(id);
+    },
+  };
 
-/** Только у хоста: он один решает, кому какая роль досталась. */
-const roster = new Map<string, { name: string; role: RoleId | null }>();
+  const isHost = () => store.current.myId !== "" && store.current.myId === store.current.hostId;
 
-const inTauri = "__TAURI_INTERNALS__" in window;
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  // 2. Реактивное обновление UI
+  let currentScreen: Screen | null = null;
+  let overlayTileCount = 0;
+  store.subscribe((state) => {
+    renderUI(refs, state, tiles, media);
+    applyRoleEffects();
+    renderCode();
 
-async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
-  if (!inTauri) return null; // чтобы UI открывался и в обычном браузере
-  return await invoke<T>(cmd, args);
-}
+    if (state.screen !== currentScreen) {
+      const enteringGame = state.screen === "game";
+      const leavingGame = currentScreen === "game";
+      currentScreen = state.screen;
+      if (enteringGame) {
+        overlayTileCount = state.players.length;
+        void win.enterOverlay(overlayTileCount);
+      } else if (leavingGame) {
+        void win.exitOverlay();
+      }
+    } else if (state.screen === "game" && state.players.length !== overlayTileCount) {
+      // Третий игрок подключился, пока оверлей уже открыт — подгоняем ширину под него.
+      overlayTileCount = state.players.length;
+      void win.fitOverlay(overlayTileCount);
+    }
+  });
 
-const isHost = () => state.myId !== "" && state.myId === state.hostId;
-const me = () => state.players.find((p) => p.id === state.myId) ?? null;
-const myRole = () => me()?.role ?? null;
-const myEffects = () => {
-  const r = myRole();
-  return r ? EFFECTS[r] : null;
-};
-
-// ---------------------------------------------------------------- камера
-
-async function setCameraTrack(track: MediaStreamTrack) {
-  for (const old of outStream.getVideoTracks()) {
-    outStream.removeTrack(old);
-    old.stop();
+  function applyRoleEffects() {
+    const state = store.current;
+    const me = state.players.find((p) => p.id === state.myId);
+    // Камера транслируется всё время, пока мы в комнате. Роль могла
+    // подставиться локально раньше, чем групповой раунд прошёл проверку
+    // синхронизации (tryStartRound) — пока phase не "game", это ещё не
+    // подтверждённый раунд, и роль (например "немая", которую по правилам
+    // не видит вообще никто) не должна гасить трансляцию раньше времени.
+    // В свободном лобби роли и раунды не применяются вообще никогда.
+    const roundActive = state.roomMode === "bombanana" && state.phase === "game";
+    const broadcasting = state.screen !== "home" && (!roundActive || isSeenByAnyone(me?.role ?? null));
+    mesh?.setOutgoingVideo(broadcasting);
   }
-  outStream.addTrack(track);
-  refs.selfPreview.srcObject = outStream;
-  void refs.selfPreview.play().catch(() => {});
-  await mesh?.replaceVideo(track);
-}
 
-async function ensureCamera(deviceId?: string): Promise<boolean> {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-        width: { ideal: 640 },
-        height: { ideal: 480 },
-        frameRate: { ideal: 24 },
+  // 3. Системные кнопки окна Tauri
+  refs.btnMin.onclick = () => win.minimize();
+  refs.btnClose.onclick = () => win.close();
+
+  // Отражаем переключение прокликов по хоткею Ctrl+Shift+O из Rust.
+  await listen<boolean>("overlay:clickthrough", (ev) => {
+    store.update({ interactive: !ev.payload });
+  });
+
+  // Живая синхронизация с самой игрой (Rust читает Player.log BOMBANANA) —
+  // раунд стартует/заканчивается в оверлее сам, без ручных кнопок, а роль,
+  // которую игра реально назначила этому клиенту, подставляется вместо
+  // ручного клика по карточке. Сам момент старта не запускает фазу напрямую —
+  // сначала репортим хосту (см. "Синхронизация старта раунда" ниже), чтобы
+  // не поймать рассинхрон (двое в одной катке, третий — в другой).
+  // Игра может быть запущена в фоне и во время свободного лобби (друзья просто
+  // общаются, кто-то параллельно играет соло) — сигналы от неё тогда игнорируем,
+  // роли/раунды не имеют смысла вне обычной комнаты BOMBANANA.
+  let myGameLobbyId: string | null = null;
+  const inBombanana = () => store.current.roomMode === "bombanana";
+
+  void watchGameState({
+    onRoundStart: (role) => {
+      if (!inBombanana()) return;
+      if (role) applyDetectedRole(role);
+      reportRoundStart();
+    },
+    onRoundEnd: () => {
+      if (!inBombanana()) return;
+      endRound();
+    },
+    onLevel: (level) => {
+      if (!inBombanana()) return;
+      store.update({ level });
+    },
+    onLobby: (lobbyId) => {
+      myGameLobbyId = lobbyId;
+    },
+  });
+
+  // 4. Список камер — только для выбора, без превью и без раннего захвата потока.
+  // Подписи устройств браузер отдаёт только после разрешения — если списка
+  // ещё нет, коротко трогаем getUserMedia и сразу останавливаем трек.
+  async function loadCameraList() {
+    try {
+      let devices = await camera.listDevices();
+      if (devices.length > 0 && !devices[0].label) {
+        try {
+          const probe = await navigator.mediaDevices.getUserMedia({ video: true });
+          probe.getTracks().forEach((t) => t.stop());
+          devices = await camera.listDevices();
+        } catch {
+          // Разрешение не дали сейчас — покажем список без подписей, попробуем ещё раз при хосте/входе.
+        }
+      }
+      refs.camSelect.innerHTML = devices
+        .map((d, i) => `<option value="${d.deviceId}">${d.label || `Камера ${i + 1}`}</option>`)
+        .join("");
+      if (devices.length === 0) {
+        refs.camErr.textContent = "Камеры не найдены";
+        refs.camErr.hidden = false;
+      }
+    } catch {
+      refs.camErr.textContent = "Не удалось получить список камер";
+      refs.camErr.hidden = false;
+    }
+  }
+  void loadCameraList();
+
+  // Реальный захват камеры откладывается до клика по «Поднять лобби»/«Войти».
+  async function initCamera() {
+    if (camera.stream) return camera.stream;
+    try {
+      return await camera.start(refs.camSelect.value || undefined);
+    } catch (e) {
+      refs.camErr.textContent = "Ошибка доступа к камере";
+      refs.camErr.hidden = false;
+      return null;
+    }
+  }
+
+  // Пиры получают КЛОН трека, а не сам трек камеры: если его приглушить (роль
+  // «немая» или пауза до старта партии), это не должно чернить собственный превью.
+  let outboundStream: MediaStream | null = null;
+  let outboundTrack: MediaStreamTrack | null = null;
+
+  // 5. Настройка WebRTC Mesh
+  function setupMesh(selfId: string, stream: MediaStream) {
+    outboundStream = new MediaStream();
+    const track = stream.getVideoTracks()[0];
+    if (track) {
+      outboundTrack = track.clone();
+      outboundStream.addTrack(outboundTrack);
+    }
+
+    mesh = new VideoMesh(selfId, outboundStream, {
+      signal: (to, payload) => signal?.send(payload, to),
+      onStream: (from, remoteStream) => {
+        remoteStreams.set(from, remoteStream);
+        store.touch();
       },
-      audio: false, // микрофона в этой игре нет принципиально
+      onState: (from, state) => {
+        const prev = conn.get(from);
+        conn.set(from, state);
+        store.touch();
+        if (state === "failed" && prev !== "failed") {
+          const name = store.current.players.find((p) => p.id === from)?.name ?? "Игрок";
+          toast(refs.toasts, `${name}: не удалось соединить видео`);
+        }
+      },
     });
-    await setCameraTrack(stream.getVideoTracks()[0]);
-    refs.camErr.hidden = true;
-    await listCameras();
-    // Свежий трек приходит с enabled = true — прогоняем эффекты роли заново,
-    // иначе немая обезьяна заговорит, просто переключив камеру.
-    render();
-    return true;
-  } catch (e) {
-    const msg = `Камера недоступна: ${errText(e)}`;
-    refs.camErr.hidden = false;
-    refs.camErr.textContent = msg;
-    refs.homeErr.hidden = false;
-    refs.homeErr.textContent = msg;
-    return false;
+
+    // Догоняем то, что пришло раньше, чем mesh был готов принимать.
+    if (pendingPeers) {
+      void mesh.sync(pendingPeers);
+      pendingPeers = null;
+    }
+    for (const { from, data } of pendingSignals.splice(0)) {
+      void mesh.accept(from, data);
+    }
   }
-}
 
-async function listCameras() {
-  // Имена устройств приходят только после выдачи доступа.
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cams = devices.filter((d) => d.kind === "videoinput");
-  const current = outStream.getVideoTracks()[0]?.getSettings().deviceId ?? "";
-  refs.camSelect.innerHTML = cams
-    .map(
-      (c, i) =>
-        `<option value="${c.deviceId}"${c.deviceId === current ? " selected" : ""}>${
-          c.label || `Камера ${i + 1}`
-        }</option>`,
-    )
-    .join("");
-  refs.camSelect.hidden = cams.length < 2;
-}
+  // ---------------------------------------------------------- состояние хоста
 
-function stopCamera() {
-  for (const track of outStream.getVideoTracks()) {
-    outStream.removeTrack(track);
-    track.stop();
+  /** Только хост зовёт: рассылает всем актуальный снимок состояния. */
+  function hostSync() {
+    if (!isHost()) return;
+    const s = store.current;
+    signal?.send({
+      type: "state_sync",
+      phase: s.phase,
+      round: s.round,
+      players: s.players,
+      roomMode: s.roomMode,
+    });
   }
-}
 
-// ---------------------------------------------------------------- сеть
+  /** Применяет снимок состояния, присланный хостом. Экран (screen) сюда не входит —
+   * каждый клиент сам переходит в "game" сразу при подключении (см. onHello). */
+  function applyStateSync(data: any) {
+    const players: Player[] = Array.isArray(data.players) ? data.players : [];
+    const phase = data.phase === "game" ? "game" : "lobby";
+    const round = Number(data.round) || 1;
+    const roomMode: RoomMode = data.roomMode === "free" ? "free" : "bombanana";
+    store.update({ players, phase, round, roomMode });
+  }
 
-const meshHandlers: MeshHandlers = {
-  signal: (to, payload) => signal?.send({ k: "rtc", payload }, to),
-  onStream: (from, stream) => {
-    streams.set(from, stream);
-    render();
-  },
-  onState: (from, st) => {
-    conn.set(from, st);
-    render();
-  },
-};
+  /** Хост эксклюзивно назначает роль: кто первый выбрал — тому и досталась. */
+  function applyRolePick(id: string, wanted: RoleId | null) {
+    if (!isHost()) return;
+    const current = store.current.players;
+    if (wanted !== null) {
+      const conflict = current.some((p) => p.id !== id && p.role === wanted);
+      if (conflict) return;
+    }
+    const updated = current.map((p) => (p.id === id ? { ...p, role: wanted } : p));
+    store.update({ players: updated });
+    hostSync();
+  }
 
-const handlers: SignalHandlers = {
-  onHello(id, hostId) {
-    state.myId = id;
-    state.hostId = hostId;
-    mesh = new Mesh(id, outStream, meshHandlers);
-    if (isHost()) roster.set(id, { name: state.name, role: null });
-    signal?.send({ k: "profile", name: state.name });
-    render();
-  },
+  /** Просит выставить роль "мне" — сам решает, применить локально (хост) или послать хосту (гость). */
+  function requestRolePick(wanted: RoleId | null) {
+    const s = store.current;
+    if (isHost()) applyRolePick(s.myId, wanted);
+    else signal?.send({ type: "role_pick", role: wanted }, s.hostId);
+  }
 
-  onPeers(peers, hostId) {
-    state.hostId = hostId;
-    peerOrder = peers;
+  /** Роль, которую реальная игра назначила этому клиенту — приходит из watchGameState. */
+  function applyDetectedRole(role: RoleId) {
+    const mine = store.current.players.find((p) => p.id === store.current.myId);
+    if (mine?.role === role) return;
+    requestRolePick(role);
+  }
+
+  // Вспомогательная функция выхода из лобби
+  function leaveLobby() {
+    if (signal) {
+      signal.close();
+      signal = null;
+    }
+    if (mesh) {
+      mesh.destroy();
+      mesh = null;
+    }
+    camera.stop();
+    outboundTrack?.stop();
+    outboundTrack = null;
+    outboundStream = null;
+    for (const tile of tiles.values()) tile.root.remove();
+    tiles.clear();
+    remoteStreams.clear();
+    conn.clear();
+
+    store.update({
+      screen: "home",
+      phase: "lobby",
+      players: [],
+      myId: "",
+      hostId: "",
+      round: 1,
+      roomCode: "",
+      level: null,
+      roomMode: "bombanana",
+    });
+    codeRevealed = false;
+    codeClicks = 0;
+    if (hideTimer !== null) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+    roundReports.clear();
+    myGameLobbyId = null;
+    pendingPeers = null;
+    pendingSignals.length = 0;
+  }
+
+  function handlePeers(peers: string[], hostId: string) {
+    if (mesh) void mesh.sync(peers);
+    else pendingPeers = peers;
+    store.update({ hostId });
 
     if (isHost()) {
-      for (const id of peers) {
-        if (!roster.has(id)) roster.set(id, { name: "Обезьяна", role: null });
+      const capacity = ROOM_CAPACITY[store.current.roomMode];
+      const current = store.current.players;
+      const keep = current.filter((p) => peers.includes(p.id));
+      const newcomers = peers.filter((pid) => !current.some((p) => p.id === pid));
+      const room = Math.max(0, capacity - keep.length);
+      const admitted = newcomers.slice(0, room);
+      const rejected = newcomers.slice(room);
+
+      const added = admitted.map((pid) => ({
+        id: pid,
+        name: pid === store.current.myId ? store.current.name : `Игрок ${pid}`,
+        role: null,
+      }));
+      store.update({ players: [...keep, ...added] });
+      hostSync();
+
+      for (const pid of rejected) {
+        signal?.kick(pid, `Лобби заполнено (макс. ${capacity} чел.)`);
       }
-      for (const id of [...roster.keys()]) {
-        if (!peers.includes(id)) roster.delete(id);
-      }
-      hostBroadcast();
     }
 
-    void mesh?.sync(peers);
-    for (const id of [...streams.keys()]) if (!peers.includes(id)) streams.delete(id);
-    render();
-  },
+    for (const id of [...remoteStreams.keys()]) if (!peers.includes(id)) remoteStreams.delete(id);
+  }
 
-  onData(from, data) {
+  function handleData(from: string, data: any) {
+    // mesh.accept() сам open()-ит запись о P2P-соединении при первом вызове —
+    // нельзя звать его для ЛЮБОГО сообщения (profile/role_pick/round_ready/
+    // state_sync тоже сюда прилетают), иначе это создаёт "пустую" запись в
+    // VideoMesh.peers ДО настоящего SDP-оффера, и mesh.sync() потом решает,
+    // что соединение уже есть, и не шлёт оффер вообще — камера так и не подключается.
+    if (data?.kind === "sdp" || data?.kind === "ice") {
+      if (mesh) void mesh.accept(from, data);
+      else pendingSignals.push({ from, data });
+    }
     if (!data || typeof data !== "object") return;
-    switch (data.k) {
-      case "profile":
-        if (isHost()) {
-          const entry = roster.get(from);
-          if (entry) {
-            entry.name = String(data.name ?? "Обезьяна").slice(0, 16);
-            hostBroadcast();
-          }
-        }
+
+    switch (data.type) {
+      case "profile": {
+        if (!isHost()) break;
+        const current = store.current.players;
+        const name = String(data.name ?? "Обезьяна").slice(0, 16);
+        const exists = current.some((p) => p.id === from);
+        const updated = exists
+          ? current.map((p) => (p.id === from ? { ...p, name } : p))
+          : [...current, { id: from, name, role: null }];
+        store.update({ players: updated });
+        hostSync();
         break;
-      case "pick":
-        if (isHost()) hostAssign(from, data.role ?? null);
+      }
+      case "role_pick":
+        if (isHost()) applyRolePick(from, data.role ?? null);
         break;
-      case "state":
-        if (from !== state.hostId) return; // состояние принимаем только от хоста
-        applyState(data);
+      case "round_ready":
+        if (isHost()) reportRoundReady(from, data.lobbyId ?? null);
         break;
-      case "ping":
-        if (myEffects()?.receivesPings === false) return; // глухая обезьяна
-        showPing(from, String(data.emoji ?? "❓"));
-        break;
-      case "rtc":
-        void mesh?.accept(from, data.payload);
+      case "state_sync":
+        if (from === store.current.hostId) applyStateSync(data);
         break;
     }
-  },
+  }
 
-  onClosed(reason) {
-    void leave(reason);
-  },
-};
+  // ---------------------------------------------------------- надёжность соединения
 
-// ------------------------------------------------------- логика хоста
+  /** Общие для host()/join() колбэки восстановления связи — просто тосты, без обрыва сессии. */
+  function reconnectionHandlers() {
+    return {
+      onReconnecting: () => toast(refs.toasts, "Связь прервалась — переподключаюсь…"),
+      onReconnected: () => toast(refs.toasts, "Связь восстановлена"),
+      onPeerReconnecting: (peerId: string) => {
+        const name = store.current.players.find((p) => p.id === peerId)?.name ?? "Игрок";
+        toast(refs.toasts, `${name}: связь прервалась, ждём…`);
+      },
+      onPeerReconnected: (peerId: string) => {
+        const name = store.current.players.find((p) => p.id === peerId)?.name ?? "Игрок";
+        toast(refs.toasts, `${name} вернулся`);
+      },
+    };
+  }
 
-function hostBroadcast() {
-  const players: Player[] = peerOrder
-    .filter((id) => roster.has(id))
-    .map((id) => ({ id, name: roster.get(id)!.name, role: roster.get(id)!.role }));
+  // ---------------------------------------------------------- код комнаты
 
-  const msg = { k: "state", phase: state.phase, round: state.round, players };
-  signal?.send(msg);
-  applyState(msg);
-}
+  // По умолчанию код спрятан звёздочками (кто-то может подглядывать в стрим),
+  // но скопировать его можно кликом в любом виде. Полностью показать — 5 кликов
+  // подряд с анимацией "треска льда", и через 5 секунд он сам снова прячется.
+  let codeRevealed = false;
+  let codeClicks = 0;
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
-function hostAssign(id: string, wanted: RoleId | null) {
-  const entry = roster.get(id);
-  if (!entry) return;
-  if (wanted !== null) {
-    if (!ROLES.some((r) => r.id === wanted)) return;
-    // Роль эксклюзивна: кто первый кликнул, того и тапки.
-    for (const [otherId, other] of roster) {
-      if (otherId !== id && other.role === wanted) return;
+  function maskCode(code: string): string {
+    return code.replace(/[^-]/g, "*");
+  }
+
+  function renderCode() {
+    const code = store.current.roomCode;
+    refs.ovBadge.disabled = !code;
+    refs.ovBadge.textContent = !code ? "—" : codeRevealed ? code : maskCode(code);
+  }
+
+  function rehideCode() {
+    codeRevealed = false;
+    codeClicks = 0;
+    hideTimer = null;
+    renderCode();
+  }
+
+  refs.ovBadge.onclick = () => {
+    const code = store.current.roomCode;
+    if (!code) return;
+
+    navigator.clipboard.writeText(code);
+    toast(refs.toasts, "Код скопирован!");
+
+    if (codeRevealed) return;
+
+    codeClicks++;
+    if (codeClicks >= 5) {
+      refs.ovBadge.classList.add("cracking");
+      setTimeout(() => {
+        refs.ovBadge.classList.remove("cracking");
+        codeRevealed = true;
+        renderCode();
+        if (hideTimer !== null) clearTimeout(hideTimer);
+        hideTimer = setTimeout(rehideCode, 5000);
+      }, 360);
     }
-  }
-  entry.role = wanted;
-  hostBroadcast();
-}
-
-function hostShuffle() {
-  const ids = peerOrder.filter((id) => roster.has(id));
-  const pool: (RoleId | null)[] = ROLES.map((r) => r.id);
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  ids.forEach((id, i) => {
-    roster.get(id)!.role = pool[i] ?? null;
-  });
-  hostBroadcast();
-}
-
-function canStart() {
-  return state.players.length >= 2 && state.players.every((p) => p.role !== null);
-}
-
-function hostStart() {
-  if (!isHost() || !canStart()) return;
-  state.phase = "game";
-  hostBroadcast();
-}
-
-function hostNewRound() {
-  if (!isHost()) return;
-  state.phase = "lobby";
-  state.round += 1;
-  for (const entry of roster.values()) entry.role = null;
-  hostBroadcast();
-}
-
-// ---------------------------------------------------------------- экраны
-
-function applyState(msg: any) {
-  const wasPhase = state.phase;
-  state.players = Array.isArray(msg.players) ? (msg.players as Player[]) : [];
-  state.phase = msg.phase === "game" ? "game" : "lobby";
-  state.round = Number(msg.round) || 1;
-
-  const target: Screen = state.phase === "game" ? "game" : "lobby";
-  if (state.screen !== target || wasPhase !== state.phase) void setScreen(target);
-  render();
-}
-
-async function setScreen(next: Screen) {
-  if (state.screen === next) return;
-  state.screen = next;
-  refs.shell.dataset.screen = next;
-
-  if (next === "game") {
-    const size = overlaySize(state.players.length);
-    overlayWidth = size.width;
-    await call("set_overlay", { on: true, ...size });
-    // Как в Discord: по умолчанию мышь принадлежит игре, не оверлею.
-    await call("set_clickthrough", { on: true }).catch(() => null);
-  } else {
-    overlayWidth = 0;
-    await call("set_overlay", { on: false, width: 0, height: 0 }).catch(() => null);
-    state.interactive = true;
-    refs.shell.dataset.interactive = "true";
-  }
-  render();
-}
-
-async function startSession(mode: "host" | "join") {
-  refs.homeErr.hidden = true;
-  state.name = (refs.inName.value.trim() || "Обезьяна").slice(0, 16);
-  localStorage.setItem("bombanana.name", state.name);
-
-  if (!(await ensureCamera())) return;
-
-  try {
-    let url: string;
-    if (mode === "host") {
-      const port = Number(refs.inPort.value) || 47821;
-      const info = await call<{ port: number; ip: string }>("host_start", { port });
-      if (!info) throw new Error("Хост доступен только внутри приложения.");
-      hosting = true;
-      lobbyAddr = `${info.ip}:${info.port}`;
-      url = `ws://127.0.0.1:${info.port}`;
-    } else {
-      const addr = refs.inAddr.value.trim();
-      if (!addr) throw new Error("Введи адрес хоста, например 192.168.0.10:47821");
-      lobbyAddr = addr.includes(":") ? addr : `${addr}:47821`;
-      localStorage.setItem("bombanana.addr", lobbyAddr);
-      url = `ws://${lobbyAddr}`;
-    }
-
-    signal = new Signal(handlers);
-    await signal.connect(url);
-    await setScreen("lobby");
-  } catch (e) {
-    await leave(errText(e));
-  }
-}
-
-async function leave(reason?: string) {
-  mesh?.close();
-  mesh = null;
-  signal?.close();
-  signal = null;
-  if (hosting) {
-    await call("host_stop").catch(() => null);
-    hosting = false;
-  }
-  stopCamera();
-
-  for (const tile of tiles.values()) tile.root.remove();
-  tiles.clear();
-  streams.clear();
-  conn.clear();
-  roster.clear();
-  peerOrder = [];
-  state.players = [];
-  state.phase = "lobby";
-  state.myId = "";
-  state.hostId = "";
-
-  await setScreen("home");
-  if (reason) {
-    refs.homeErr.hidden = false;
-    refs.homeErr.textContent = reason;
-  }
-  render();
-}
-
-// ---------------------------------------------------------------- действия
-
-function pickRole(wanted: RoleId) {
-  const next = myRole() === wanted ? null : wanted; // повторный клик снимает роль
-  if (isHost()) hostAssign(state.myId, next);
-  else signal?.send({ k: "pick", role: next }, state.hostId);
-}
-
-function sendPing(emoji: string) {
-  signal?.send({ k: "ping", emoji });
-  showPing(state.myId, emoji); // себе — как подтверждение отправки
-}
-
-function showPing(from: string, emoji: string) {
-  const who = state.players.find((p) => p.id === from);
-  toast(refs.toasts, `${emoji} ${who?.name ?? "?"}`);
-}
-
-// ---------------------------------------------------------------- отрисовка
-
-function render() {
-  renderLobby();
-  renderRoles();
-  renderOverlay();
-  renderTiles();
-  applyRoleEffects();
-}
-
-function renderLobby() {
-  refs.addrLabel.textContent = hosting ? "Твой адрес — раздай его друзьям" : "Подключён к";
-  refs.addrValue.textContent = lobbyAddr || "—";
-  refs.playerCount.textContent = `${state.players.length}/3`;
-
-  refs.players.innerHTML = state.players
-    .map((p) => {
-      const r = role(p.role);
-      return `<li${p.id === state.myId ? ' class="mine"' : ""}>
-        <span class="pname">${escapeHtml(p.name)}</span>
-        ${p.id === state.hostId ? '<span class="ptag">хост</span>' : ""}
-        <span class="grow"></span>
-        <span class="prole">${r ? `${r.emoji} ${r.title}` : "выбирает…"}</span>
-      </li>`;
-    })
-    .join("");
-
-  const missing = 3 - state.players.length;
-  refs.lobbyStatus.textContent = !canStart()
-    ? missing > 0
-      ? `Ждём ещё ${missing}, и чтобы все выбрали роль`
-      : "Ждём, пока все выберут роль"
-    : `Раунд ${state.round} — можно начинать`;
-
-  refs.btnStart.hidden = !isHost();
-  refs.btnStart.disabled = !canStart();
-  refs.btnShuffle.hidden = !isHost();
-}
-
-function renderRoles() {
-  const taken = new Map<RoleId, Player>();
-  for (const p of state.players) if (p.role) taken.set(p.role, p);
-
-  for (const el of refs.roles.querySelectorAll<HTMLElement>(".role")) {
-    const id = el.dataset.role as RoleId;
-    const holder = taken.get(id);
-    const mine = holder?.id === state.myId;
-    el.dataset.state = mine ? "mine" : holder ? "taken" : "free";
-    (el.querySelector(".role-taken") as HTMLElement).textContent = mine
-      ? "это ты"
-      : (holder?.name ?? "свободна");
-  }
-}
-
-function renderOverlay() {
-  const r = role(myRole());
-  refs.ovBadge.textContent = r ? `${r.emoji} ${r.title}` : `Раунд ${state.round}`;
-  refs.btnRound.hidden = !isHost();
-  refs.shell.dataset.interactive = String(state.interactive);
-
-  const keys = refs.overlay.querySelector(".ov-keys") as HTMLElement;
-  keys.textContent = state.interactive
-    ? "Ctrl+Shift+O — отдать мышь игре"
-    : "Ctrl+Shift+O — взять мышь";
-}
-
-function renderTiles() {
-  if (state.screen !== "game") return;
-  const eff = myEffects();
-
-  for (const player of state.players) {
-    let tile = tiles.get(player.id);
-    if (!tile) {
-      tile = createTile(player.id);
-      tiles.set(player.id, tile);
-      refs.tiles.appendChild(tile.root);
-    }
-
-    const mine = player.id === state.myId;
-    const stream = mine ? outStream : (streams.get(player.id) ?? null);
-    if (stream && tile.video.srcObject !== stream) {
-      tile.video.srcObject = stream;
-      void tile.video.play().catch(() => {});
-    }
-
-    // Меня ослепили -> гаснет всё. Его заткнули -> гаснет только он.
-    const blinded = eff ? (mine ? !eff.seesSelf : !eff.seesOthers) : false;
-    const silenced = player.role ? !EFFECTS[player.role].isSeen : false;
-    const maskEmoji = blinded ? "🙈" : silenced && !mine ? "🙊" : "";
-    tile.mask.hidden = maskEmoji === "";
-    (tile.mask.firstElementChild as HTMLElement).textContent = maskEmoji;
-    // Немая видит себя, но приглушённо — чтобы помнила, что наружу ничего не идёт.
-    tile.root.dataset.self = String(mine);
-    tile.root.dataset.selfMuted = String(silenced && mine && !blinded);
-
-    const r = role(player.role);
-    tile.label.textContent = `${r ? `${r.emoji} ` : ""}${player.name}${mine ? " · ты" : ""}`;
-    tile.root.dataset.conn = mine ? "connected" : (conn.get(player.id) ?? "new");
-  }
-
-  for (const [id, tile] of [...tiles]) {
-    if (!state.players.some((p) => p.id === id)) {
-      tile.root.remove();
-      tiles.delete(id);
-    }
-  }
-
-  // Порядок плиток одинаков у всех. Двигаем DOM только если он реально разъехался.
-  const want = state.players.map((p) => tiles.get(p.id)!.root);
-  const have = [...refs.tiles.children];
-  if (want.length !== have.length || want.some((el, i) => el !== have[i])) {
-    for (const el of want) refs.tiles.appendChild(el);
-  }
-
-  const size = overlaySize(state.players.length);
-  if (size.width !== overlayWidth) {
-    overlayWidth = size.width;
-    void call("resize_overlay", size).catch(() => null);
-  }
-}
-
-function applyRoleEffects() {
-  const eff = myEffects();
-  // Камеры «включаются» только с началом партии — до этого превью локальное.
-  const broadcasting = state.phase === "game" && (!eff || eff.isSeen);
-  mesh?.setOutgoingVideo(broadcasting);
-  refs.previewOff.hidden = outStream.getVideoTracks().length > 0;
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
-}
-
-// ---------------------------------------------------------------- запуск
-
-function wire() {
-  const win = inTauri ? getCurrentWindow() : null;
-  refs.btnMin.onclick = () => void win?.minimize();
-  refs.btnClose.onclick = () => void win?.close();
-
-  refs.btnHost.onclick = () => void startSession("host");
-  refs.btnJoin.onclick = () => void startSession("join");
-  refs.inAddr.onkeydown = (e) => {
-    if (e.key === "Enter") void startSession("join");
   };
 
-  refs.btnCopy.onclick = async () => {
+  // 6. Создать лобби (Хост) — общий флоу и для обычной комнаты BOMBANANA,
+  // и для свободного лобби (кнопка-сабкарточка на главном экране).
+  async function hostFlow(mode: RoomMode) {
+    refs.homeErr.hidden = true;
+    const name = (refs.inName.value.trim() || "Обезьяна").slice(0, 16);
+    // Повторный клик после неудачи не должен плодить зомби-Peer'ов на брокере.
+    signal?.close();
+    signal = null;
+
     try {
-      await navigator.clipboard.writeText(lobbyAddr);
-      refs.btnCopy.textContent = "Скопировано";
-      setTimeout(() => (refs.btnCopy.textContent = "Копировать"), 1200);
-    } catch {
-      /* буфер недоступен — адрес и так на экране */
+      const stream = await initCamera();
+      if (!stream) return;
+
+      // Код мог случайно совпасть с чужой активной комнатой на брокере — пробуем ещё раз.
+      let code = generateRoomCode();
+      for (let attempt = 0; ; attempt++) {
+        signal = new Signal({
+          onHello: (id) => {
+            store.update({
+              myId: id,
+              hostId: id,
+              name,
+              screen: "game",
+              roomCode: code,
+              roomMode: mode,
+              players: [{ id, name, role: null }],
+            });
+            setupMesh(id, stream);
+          },
+          onPeers: handlePeers,
+          onData: handleData,
+          onClosed: (reason) => {
+            toast(refs.toasts, reason);
+            leaveLobby();
+          },
+          ...reconnectionHandlers(),
+        });
+
+        try {
+          await signal.host(code);
+          break;
+        } catch (err: any) {
+          const takenAgain = String(err?.message ?? "").includes("занят");
+          if (takenAgain && attempt < 3) {
+            code = generateRoomCode();
+            continue;
+          }
+          throw err;
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to host:", err);
+      refs.homeErr.textContent = typeof err === "string" ? err : err.message || "Не удалось создать лобби";
+      refs.homeErr.hidden = false;
+    }
+  }
+
+  refs.btnHost.onclick = () => void hostFlow("bombanana");
+  refs.btnHostFree.onclick = () => void hostFlow("free");
+
+  // 7. Подключиться к лобби (Клиент)
+  refs.btnJoin.onclick = async () => {
+    refs.homeErr.hidden = true;
+    const codeInput = refs.inAddr.value.trim();
+    const name = (refs.inName.value.trim() || "Обезьяна").slice(0, 16);
+
+    const code = normalizeRoomCode(codeInput);
+    if (!code) {
+      refs.homeErr.textContent = "Укажи код комнаты";
+      refs.homeErr.hidden = false;
+      return;
+    }
+    signal?.close();
+    signal = null;
+
+    try {
+      const stream = await initCamera();
+      if (!stream) return;
+
+      signal = new Signal({
+        onHello: (id, hostId) => {
+          store.update({
+            myId: id,
+            hostId,
+            name,
+            screen: "game",
+            roomCode: code,
+            players: [{ id, name, role: null }],
+          });
+          setupMesh(id, stream);
+          signal?.send({ type: "profile", name }, hostId);
+        },
+        onPeers: handlePeers,
+        onData: handleData,
+        onClosed: (reason) => {
+          toast(refs.toasts, reason);
+          leaveLobby();
+        },
+        ...reconnectionHandlers(),
+      });
+
+      await signal.join(code);
+    } catch (err: any) {
+      console.error("Failed to join:", err);
+      refs.homeErr.textContent = typeof err === "string" ? err : err.message || "Не удалось подключиться";
+      refs.homeErr.hidden = false;
     }
   };
 
-  refs.camSelect.onchange = () => void ensureCamera(refs.camSelect.value);
-  refs.btnLeave.onclick = () => void leave();
-  refs.btnBack.onclick = () => void leave();
-  refs.btnStart.onclick = () => hostStart();
-  refs.btnShuffle.onclick = () => hostShuffle();
-  refs.btnRound.onclick = () => hostNewRound();
+  // ---------------------------------------------------------- синхронизация старта раунда
+  //
+  // Раунд не может начаться вдвоём/одному — нужно ровно трое в комнате.
+  // Мало этого: каждый клиент видит СВОЙ локальный Player.log, и теоретически
+  // двое могут договориться и зайти в свою катку, а третий по ошибке запустить
+  // отдельную сессию — тогда у всех троих локально "раунд начался", но не в
+  // одной игре. Поэтому старт не триггерится напрямую из watchGameState —
+  // каждый клиент репортит хосту детект старта (+ свой Steam lobbyId, если
+  // игра его раскрыла), а хост стартует раунд, только когда отчиталось ровно
+  // столько игроков, сколько сейчас в комнате, все отчёты пришли плотно по
+  // времени, и если у кого-то есть настоящий lobbyId — они все совпадают.
+  const ROUND_SYNC_WINDOW_MS = 8000;
+  const roundReports = new Map<string, { at: number; lobbyId: string | null }>();
 
-  refs.roles.onclick = (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>(".role");
-    if (btn?.dataset.role) pickRole(btn.dataset.role as RoleId);
-  };
-  refs.pingbar.onclick = (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>(".ping");
-    if (btn?.dataset.ping) sendPing(btn.dataset.ping);
-  };
-
-  // В оверлее контекстное меню вебвью только мешает.
-  document.addEventListener("contextmenu", (e) => e.preventDefault());
-}
-
-async function boot() {
-  refs = mount(document.getElementById("app")!);
-  refs.inName.value = localStorage.getItem("bombanana.name") ?? "";
-  refs.inAddr.value = localStorage.getItem("bombanana.addr") ?? "";
-  wire();
-  render();
-
-  if (inTauri) {
-    await listen<boolean>("overlay:clickthrough", (ev) => {
-      state.interactive = !ev.payload;
-      renderOverlay();
-    });
+  function reportRoundStart() {
+    const s = store.current;
+    if (isHost()) reportRoundReady(s.myId, myGameLobbyId);
+    else signal?.send({ type: "round_ready", lobbyId: myGameLobbyId }, s.hostId);
   }
+
+  function reportRoundReady(playerId: string, lobbyId: string | null) {
+    if (!isHost()) return;
+    roundReports.set(playerId, { at: Date.now(), lobbyId });
+    tryStartRound();
+  }
+
+  function tryStartRound() {
+    if (!isHost() || store.current.phase === "game") return;
+    const players = store.current.players;
+    if (players.length < 3) return; // нельзя начать вдвоём/одному
+
+    const reports = players.map((p) => roundReports.get(p.id));
+    if (reports.some((r) => !r)) return; // ещё не все отчитались
+
+    const times = reports.map((r) => r!.at);
+    if (Math.max(...times) - Math.min(...times) > ROUND_SYNC_WINDOW_MS) return; // разнесены по времени — не похоже на общий старт
+
+    const lobbyIds = reports.map((r) => r!.lobbyId).filter((id): id is string => id !== null);
+    if (lobbyIds.length >= 2 && !lobbyIds.every((id) => id === lobbyIds[0])) {
+      toast(refs.toasts, "Похоже, вы не в одной катке BOMBANANA — раунд не запущен");
+      roundReports.clear();
+      return;
+    }
+
+    startRound();
+  }
+
+  // 10. Начать раунд — хост-only, вызывается только из tryStartRound() после
+  // проверки, что все трое реально стартовали вместе. Оверлей уже открыт с
+  // момента входа в комнату — тут только фаза, которая включает ролевую
+  // фильтрацию у всех.
+  function startRound() {
+    if (!isHost()) return;
+    store.update({ phase: "game" });
+    hostSync();
+  }
+
+  // 11. Раунд закончился — хост-only, триггерится автоматически на
+  // CleaningMission/LoadingReport из watchGameState. Оверлей не закрываем —
+  // сбрасываем роли в null и все снова видят всех без фильтров, как в
+  // обычном видеозвонке, пока не начнётся следующий раунд.
+  function endRound() {
+    if (!isHost()) return;
+    const resetPlayers = store.current.players.map((p) => ({ ...p, role: null }));
+    store.update({
+      players: resetPlayers,
+      phase: "lobby",
+      round: store.current.round + 1,
+      level: null,
+    });
+    roundReports.clear();
+    hostSync();
+  }
+
+  // 12. Выйти из комнаты
+  refs.btnBack.onclick = () => void leaveLobby();
+
+  // В оверлее контекстное меню вебвью только мешает, а вот в текстовых полях
+  // (имя, код комнаты) оно нужно — иначе вставить код можно только Ctrl+V.
+  document.addEventListener("contextmenu", (e) => {
+    const el = e.target as HTMLElement | null;
+    const editable = el?.closest("input, textarea, [contenteditable='true']");
+    if (!editable) e.preventDefault();
+  });
 }
 
-void boot();
+bootstrap().catch(console.error);

@@ -46,7 +46,7 @@ button {
   cursor: pointer;
 }
 
-/* ------------------------------------------------------ лобби / главный экран */
+/* ------------------------------------------------------ главный экран */
 
 .chrome {
   height: 100%;
@@ -115,8 +115,7 @@ button {
   display: none;
 }
 
-.shell[data-screen="home"] .page[data-page="home"],
-.shell[data-screen="lobby"] .page[data-page="lobby"] {
+.shell[data-screen="home"] .page[data-page="home"] {
   display: block;
 }
 
@@ -131,16 +130,8 @@ h2 {
   font-size: 15px;
 }
 
-h3 {
-  margin: 18px 0 8px;
-  font-size: 12px;
-  letter-spacing: 0.9px;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
 .lead {
-  margin: 0 0 22px;
+  margin: 0 0 20px;
   color: var(--muted);
 }
 
@@ -185,24 +176,111 @@ input:focus,
   border-color: rgba(255, 210, 74, 0.55);
 }
 
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23878d9e' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 11px;
+}
+
 .cards {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 16px;
+  margin-bottom: 8px;
 }
 
 .card {
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 22px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg-2);
+  border-radius: 16px;
+  background: linear-gradient(160deg, var(--bg-2) 0%, rgba(0, 0, 0, 0.18) 100%);
+  transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+.card-host {
+  border-color: rgba(255, 210, 74, 0.3);
+  background: linear-gradient(160deg, rgba(255, 210, 74, 0.1) 0%, var(--bg-2) 60%);
+}
+
+.card-host:hover {
+  border-color: rgba(255, 210, 74, 0.55);
+}
+
+/* Тонкая суб-карточка под "Поднять лобби" — свободный видеозвонок без BOMBANANA. */
+.card-sub {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  text-align: left;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.card-sub:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.card-sub-icon {
+  font-size: 16px;
+  flex: none;
+}
+
+.card-sub-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.card-sub-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.card-sub-desc {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-icon {
+  font-size: 30px;
+  margin-bottom: 10px;
+}
+
+.card h2 {
+  font-size: 17px;
 }
 
 .card p {
-  margin: 0;
+  margin: 0 0 16px;
   font-size: 13px;
   color: var(--muted);
   min-height: 54px;
+}
+
+.card .primary {
+  margin-top: auto;
 }
 
 .primary {
@@ -254,192 +332,19 @@ input:focus,
   color: #ffb4b4;
 }
 
-/* ------------------------------------------------------ лобби */
-
-.lobby {
-  display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 24px;
+/* Настройка имени/камеры на главном экране — второстепенный блок под карточками. */
+.setup {
+  padding-top: 16px;
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
 }
 
-.preview {
-  position: relative;
-  aspect-ratio: 4 / 3;
-  border-radius: 12px;
-  overflow: hidden;
-  background: #0a0b0f;
-  border: 1px solid var(--line);
+.setup .field {
+  margin-bottom: 12px;
 }
 
-.preview video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transform: scaleX(-1); /* себя привычнее видеть зеркально */
-}
-
-.preview-off {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  font-size: 13px;
-  background: #0a0b0f;
-}
-
-.preview-off[hidden] {
-  display: none;
-}
-
-.col-left .select {
-  margin-top: 10px;
-}
-
-.addrbox {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 11px;
-  border: 1px dashed rgba(255, 210, 74, 0.35);
-  background: rgba(255, 210, 74, 0.07);
-}
-
-.addrbox-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.addr-label {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.addrbox code {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--accent);
-  user-select: text;
-}
-
-.players {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.players li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 9px;
-  background: var(--bg-2);
-  border: 1px solid transparent;
-}
-
-.players li.mine {
-  border-color: rgba(255, 210, 74, 0.4);
-}
-
-.pname {
-  font-weight: 600;
-}
-
-.ptag {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.prole {
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.roles {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-
-.role {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 12px;
-  text-align: left;
-  border-radius: 11px;
-  border: 1px solid var(--line);
-  background: var(--bg-2);
-  transition: border-color 0.12s, background 0.12s;
-}
-
-.role:hover {
-  border-color: rgba(255, 255, 255, 0.24);
-}
-
-.role-emoji {
-  font-size: 26px;
-}
-
-.role-title {
-  font-weight: 600;
-}
-
-.role-rule {
-  font-size: 12px;
-  color: var(--muted);
-  min-height: 48px;
-}
-
-.role-taken {
-  font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--muted);
-}
-
-.role[data-state="mine"] {
-  border-color: var(--accent);
-  background: rgba(255, 210, 74, 0.1);
-}
-
-.role[data-state="mine"] .role-taken {
-  background: var(--accent);
-  color: #241d00;
-}
-
-.role[data-state="taken"] {
-  opacity: 0.5;
-}
-
-.lobby-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 20px;
-}
-
-.lobby-actions .primary {
-  width: auto;
-}
-
-.status {
-  font-size: 12px;
-  color: var(--muted);
+.setup .field:last-of-type {
+  margin-bottom: 0;
 }
 
 /* ------------------------------------------------------ оверлей */
@@ -455,6 +360,8 @@ input:focus,
   border: 1px solid rgba(255, 255, 255, 0.1);
   /* Прозрачное окно WebView2 не умеет backdrop-filter — берём плотный фон. */
   background: rgba(13, 14, 19, 0.8);
+  container-type: size;
+  container-name: overlay;
 }
 
 .shell[data-screen="game"] .overlay {
@@ -473,32 +380,87 @@ input:focus,
 .ov-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 28px;
+  gap: 6px;
+  min-height: 26px;
   flex: none;
 }
 
-.ov-badge {
-  font-size: 13px;
+.ov-code {
+  font-size: 12px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   padding: 3px 9px;
   border-radius: 7px;
   background: rgba(255, 210, 74, 0.16);
   color: var(--accent);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
-.ov-keys {
-  font-size: 10px;
+.ov-code:not(:disabled):hover {
+  background: rgba(255, 210, 74, 0.28);
+}
+
+.ov-code:disabled {
+  cursor: default;
+}
+
+.ov-code.cracking {
+  animation: crack 0.36s ease-out;
+}
+
+@keyframes crack {
+  0% {
+    color: var(--accent);
+    text-shadow: none;
+  }
+  20% {
+    text-shadow: -1px 0 #bfe9ff, 1px 0 #bfe9ff;
+  }
+  45% {
+    transform: translateX(-1px);
+    text-shadow: -2px 0 #bfe9ff, 2px 0 #bfe9ff, 0 0 6px #eaf8ff;
+  }
+  70% {
+    transform: translateX(1px);
+    color: #eaf8ff;
+    text-shadow: -2px 0 #bfe9ff, 2px 0 #bfe9ff, 0 0 10px #eaf8ff;
+  }
+  100% {
+    transform: translateX(0);
+    color: var(--accent);
+    text-shadow: none;
+  }
+}
+
+.ov-status {
+  font-size: 11px;
+  font-weight: 600;
   color: var(--muted);
   white-space: nowrap;
 }
 
+.ov-hint {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ov-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 4px 9px;
   border-radius: 7px;
   font-size: 11px;
   background: rgba(255, 255, 255, 0.1);
+  flex: none;
 }
 
 .shell[data-interactive="false"] .ov-btn {
@@ -509,20 +471,64 @@ input:focus,
   background: rgba(255, 255, 255, 0.18);
 }
 
+.ov-btn.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
 .tiles {
   display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
   gap: var(--ov-gap);
-  flex: none;
+  /* Окно можно тянуть мышью — плитки заполняют весь освободившийся объём. */
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
 }
 
 .tile {
   position: relative;
-  width: var(--tile-w);
-  height: var(--tile-h);
+  /* Растёт/сжимается вместе с окном, но не теряет пропорции кадра камеры. */
+  flex: 1 1 0;
+  aspect-ratio: 4 / 3;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
   border-radius: 9px;
   overflow: hidden;
   background: #090a0d;
   border: 1px solid transparent;
+}
+
+/* Окно вытянуто по вертикали (по умолчанию) — камеры в столбик, а не в ряд. */
+@container overlay (max-aspect-ratio: 1/1) {
+  .tiles {
+    flex-direction: column;
+  }
+
+  .tile {
+    aspect-ratio: 4 / 3;
+    flex: 0 0 auto;
+    width: 100%;
+  }
+}
+
+/* Свободное лобби (от 4 участников) — столбик стал бы слишком высоким, переходим на сетку в 2 колонки. */
+.tiles[data-grid="true"] {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-auto-rows: min-content;
+  align-content: start;
+}
+
+.tiles[data-grid="true"] .tile {
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  flex: none;
 }
 
 .tile[data-conn="connected"] {
@@ -550,9 +556,8 @@ input:focus,
   transform: scaleX(-1);
 }
 
-.tile[data-self-muted="true"] video {
-  opacity: 0.35;
-  filter: grayscale(1);
+.tile[data-filtered="true"] video {
+  filter: url(#tile-contour);
 }
 
 .tile-mask {
@@ -568,40 +573,51 @@ input:focus,
   display: none;
 }
 
-.tile-label {
+.tile-info {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 10px 7px 4px;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
-}
-
-.pingbar {
   display: flex;
-  gap: 6px;
-  height: 34px;
-  flex: none;
+  flex-direction: column;
+  gap: 1px;
+  padding: 16px 8px 5px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
 }
 
-.ping {
-  flex: 1;
-  border-radius: 8px;
-  font-size: 17px;
-  background: rgba(255, 255, 255, 0.07);
+.tile-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.ping:hover {
-  background: rgba(255, 255, 255, 0.16);
+.tile-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  vertical-align: middle;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--muted);
 }
 
-.shell[data-interactive="false"] .ping {
-  opacity: 0.35;
+.tile-tag.host {
+  background: rgba(255, 210, 74, 0.22);
+  color: var(--accent);
+}
+
+.tile-tag.role {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
 }
 
 .toasts {

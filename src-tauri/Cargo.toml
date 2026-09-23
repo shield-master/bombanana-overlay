@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 description = "Bombanana webcam overlay"
+authors = ["Anton Trofimov"]
 
 [lib]
 name = "bombanana_lib"
@@ -13,13 +14,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-global-shortcut = "2"
+notify = "6.1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
-tokio-tungstenite = "0.24"
-futures-util = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
 
 [profile.release]
 opt-level = "s"

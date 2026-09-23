@@ -24,7 +24,7 @@
         "decorations": false,
         "transparent": true,
         "shadow": false,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --use-fake-ui-for-media-stream --autoplay-policy=no-user-gesture-required"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --use-fake-ui-for-media-stream --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
       }
     ],
     "security": {
@@ -33,6 +33,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Anton Trofimov",
     "targets": ["nsis"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"],
     "windows": {
