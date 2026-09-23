@@ -1,39 +1,5 @@
 export type RoleId = "blind" | "mute" | "deaf";
 
-export interface Role {
-  id: RoleId;
-  emoji: string;
-  /** Имя обезьяны, как в лобби: «Слепая», «Немая», «Глухая». */
-  title: string;
-  /** Кто она по смыслу партии — то, чем занята в раунде. */
-  job: string;
-  rule: string;
-}
-
-export const ROLES: Role[] = [
-  {
-    id: "blind",
-    emoji: "🙈",
-    title: "Слепая",
-    job: "обезвреживает бомбу",
-    rule: "Видит себя и Глухую — но контурным чёрно-белым зрением. Немую не видит. Саму её не видит никто.",
-  },
-  {
-    id: "mute",
-    emoji: "🙊",
-    title: "Немая",
-    job: "читает инструкцию",
-    rule: "Видит всех: себя, Глухую и Слепую. Саму её не видит никто.",
-  },
-  {
-    id: "deaf",
-    emoji: "🙉",
-    title: "Глухая",
-    job: "переводчица",
-    rule: "Видит только себя. Её видят обе остальные — и Немая, и Слепая (той — контурным зрением).",
-  },
-];
-
 /**
  * Направленная видимость: может ли viewer видеть камеру target.
  * Несимметрично — Немая видит и Глухую, и Слепую, а её саму не видит никто.
@@ -69,6 +35,3 @@ export function isSeenByAnyone(role: RoleId | null): boolean {
   );
 }
 
-export function role(id: RoleId | null | undefined): Role | null {
-  return ROLES.find((r) => r.id === id) ?? null;
-}

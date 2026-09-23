@@ -1,8 +1,9 @@
 import type { AppState, MediaProvider, Player, Tile } from "../types";
 import type { RoleId } from "../roles";
 import { createTile, type Refs } from "./dom";
-import { canSee, isHighContrast, role } from "../roles";
+import { canSee, isHighContrast } from "../roles";
 import { GRID_FROM } from "../config";
+import { t } from "../i18n";
 
 export function renderUI(refs: Refs, state: AppState, tiles: Map<string, Tile>, media: MediaProvider) {
   refs.shell.dataset.screen = state.screen;
@@ -16,10 +17,12 @@ export function renderUI(refs: Refs, state: AppState, tiles: Map<string, Tile>, 
 
 function renderOverlay(refs: Refs, state: AppState) {
   refs.ovStatus.textContent =
-    state.roomMode === "free" ? "Свободное лобби" : state.level !== null ? "В игре" : "В лобби";
-  refs.ovHint.textContent = state.interactive
-    ? "Ctrl+Shift+O — открепить оверлей"
-    : "Ctrl+Shift+O — закрепить оверлей";
+    state.roomMode === "free"
+      ? t("overlay.statusFree")
+      : state.level !== null
+        ? t("overlay.statusGame")
+        : t("overlay.statusLobby");
+  refs.ovHint.textContent = state.interactive ? t("overlay.hintLock") : t("overlay.hintUnlock");
 }
 
 function renderTiles(refs: Refs, state: AppState, tiles: Map<string, Tile>, media: MediaProvider) {
@@ -82,12 +85,13 @@ function renderTiles(refs: Refs, state: AppState, tiles: Map<string, Tile>, medi
 /** [Хост] Имя [ты] [Роль обезьяна] — роль в бейдже только если раунд подтверждён и она видна этому зрителю. */
 function tileLabelHtml(player: Player, state: AppState, mine: boolean, visible: boolean): string {
   const parts: string[] = [];
-  if (player.id === state.hostId) parts.push('<span class="tile-tag host">хост</span>');
+  if (player.id === state.hostId) parts.push(`<span class="tile-tag host">${escapeHtml(t("overlay.tagHost"))}</span>`);
   parts.push(escapeHtml(player.name));
-  if (mine) parts.push('<span class="tile-tag">ты</span>');
+  if (mine) parts.push(`<span class="tile-tag">${escapeHtml(t("overlay.tagYou"))}</span>`);
   if (player.role && visible) {
-    const r = role(player.role);
-    if (r) parts.push(`<span class="tile-tag role">${escapeHtml(r.title)} обезьяна</span>`);
+    const roleName = t(`role.${player.role}`);
+    const label = t("overlay.roleSuffix", { role: roleName });
+    parts.push(`<span class="tile-tag role">${escapeHtml(label)}</span>`);
   }
   return parts.join(" ");
 }

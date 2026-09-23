@@ -22,6 +22,7 @@ import type { DataConnection } from "peerjs";
 import { Heartbeat } from "./heartbeat";
 import { getClientId } from "./identity";
 import { PeerBroker } from "./peerBroker";
+import { t } from "../i18n";
 import {
   isEnvelope,
   isFull,
@@ -171,13 +172,13 @@ export class Signal {
     return new Promise((resolve, reject) => {
       const conn = this.broker.connect(hostId);
       if (!conn) {
-        reject(new Error("Хост не отвечает. Проверь код комнаты."));
+        reject(new Error(t("net.hostNotResponding")));
         return;
       }
       this.attachIceDiagnostics(conn, hostId);
       const timer = setTimeout(() => {
         conn.close();
-        reject(new Error("Хост не отвечает. Проверь код комнаты."));
+        reject(new Error(t("net.hostNotResponding")));
       }, CONNECT_TIMEOUT_MS);
 
       conn.on("open", () => {
@@ -187,7 +188,7 @@ export class Signal {
       });
       conn.on("error", () => {
         clearTimeout(timer);
-        reject(new Error("Не удалось подключиться к хосту."));
+        reject(new Error(t("net.connectFailed")));
       });
     });
   }
@@ -205,7 +206,7 @@ export class Signal {
         await sleep(Math.min(GUEST_RECONNECT_BASE_MS * 2 ** attempt, GUEST_RECONNECT_MAX_MS));
       }
     }
-    if (!this.closedByUs) this.h.onClosed("Не удалось переподключиться к хосту.");
+    if (!this.closedByUs) this.h.onClosed(t("net.reconnectFailed"));
   }
 
   // -------------------------------------------------------------- хост
@@ -314,7 +315,7 @@ export class Signal {
     }
     if (isLeave(raw)) {
       this.intentionalLeaves.add(viaConnId);
-      if (!this.amHost) this.h.onClosed("Хост закрыл лобби.");
+      if (!this.amHost) this.h.onClosed(t("net.hostClosedLobby"));
       return;
     }
     if (isFull(raw)) {

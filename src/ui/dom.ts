@@ -31,51 +31,63 @@ ${CONTOUR_FILTER}
       <span class="logo" data-tauri-drag-region>🍌</span>
       <span class="brand" data-tauri-drag-region>Bombanana <i>overlay</i></span>
       <span class="grow" data-tauri-drag-region></span>
-      <button class="wbtn" id="btnMin" title="Свернуть">&#8211;</button>
-      <button class="wbtn danger" id="btnClose" title="Закрыть">&#10005;</button>
+      <button class="wbtn" id="btnMin" data-i18n-title="window.minimize">&#8211;</button>
+      <button class="wbtn danger" id="btnClose" data-i18n-title="window.close">&#10005;</button>
     </div>
 
     <div class="body">
       <section class="page" data-page="home">
-        <h1>Три обезьяны</h1>
-        <p class="lead">Игра на троих по вебкамере. Без микрофона — только то, что видно в камеру.</p>
-
         <div class="cards">
           <div class="card card-host">
             <span class="card-icon">🎬</span>
-            <h2>Создать лобби</h2>
-            <p>Ты становишься хостом — получишь код комнаты и дашь его друзьям, из любой сети.</p>
-            <button class="primary" id="btnHost">Поднять лобби</button>
+            <h2 data-i18n="home.hostTitle">Создать лобби</h2>
+            <p data-i18n="home.hostDesc">Ты становишься хостом — получишь код комнаты и дашь его друзьям, из любой сети.</p>
+            <button class="primary" id="btnHost" data-i18n="home.hostBtn">Поднять лобби</button>
           </div>
-          <button class="card-sub" id="btnHostFree" type="button">
+          <div class="card-sub">
             <span class="card-sub-icon">💬</span>
             <span class="card-sub-text">
-              <span class="card-sub-title">Свободное лобби</span>
-              <span class="card-sub-desc">До 8 человек · просто видеозвонок, без привязки к игре</span>
+              <span class="card-sub-title" data-i18n="home.freeTitle">Свободное лобби</span>
+              <span class="card-sub-desc" data-i18n="home.freeDesc">До 8 человек · просто видеозвонок, без привязки к игре</span>
             </span>
-          </button>
+            <button class="card-sub-enter" id="btnHostFree" type="button" data-i18n-title="home.freeEnter">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+                <polyline points="12 5 19 12 12 19"></polyline>
+              </svg>
+            </button>
+          </div>
           <div class="card card-join">
             <span class="card-icon">🔑</span>
-            <h2>Подключиться</h2>
-            <p>Введи код комнаты, который показал хост.</p>
+            <h2 data-i18n="home.joinTitle">Подключиться</h2>
+            <p data-i18n="home.joinDesc">Введи код комнаты, который показал хост.</p>
             <label class="field inline">
-              <span>Код</span>
+              <span data-i18n="home.codeLabel">Код</span>
               <input id="inAddr" placeholder="U5AF-B67C" autocomplete="off" />
             </label>
-            <button class="primary ghost" id="btnJoin">Войти в лобби</button>
+            <button class="primary ghost" id="btnJoin" data-i18n="home.joinBtn">Войти в лобби</button>
           </div>
         </div>
 
         <p class="err" id="homeErr" hidden></p>
 
+        <div class="update-bar" id="updateBar" hidden>
+          <span id="updateText">Доступно обновление</span>
+          <button class="update-btn" id="updateBtn" type="button" data-i18n="update.installBtn">Установить и перезапустить</button>
+        </div>
+
         <div class="setup">
           <label class="field">
-            <span>Твоё имя</span>
-            <input id="inName" maxlength="16" placeholder="Обезьяна" autocomplete="off" />
+            <span data-i18n="home.nameLabel">Твоё имя</span>
+            <input id="inName" maxlength="16" data-i18n-placeholder="defaultName" autocomplete="off" />
           </label>
           <label class="field">
-            <span>Выбранная камера</span>
+            <span data-i18n="home.cameraLabel">Выбранная камера</span>
             <select id="camSelect" class="select"></select>
+          </label>
+          <label class="field">
+            <span data-i18n="home.localeLabel">Язык</span>
+            <select id="localeSelect" class="select"></select>
           </label>
           <p class="err" id="camErr" hidden></p>
         </div>
@@ -85,10 +97,10 @@ ${CONTOUR_FILTER}
 
   <div class="overlay" id="overlay">
     <div class="ov-bar" data-tauri-drag-region>
-      <button class="ov-code" id="ovBadge" title="Клик — скопировать. 5 кликов — показать код.">****-****</button>
+      <button class="ov-code" id="ovBadge" data-i18n-title="overlay.codeTitle">****-****</button>
       <span class="ov-status" id="ovStatus" data-tauri-drag-region>В лобби</span>
       <span class="grow" data-tauri-drag-region></span>
-      <button class="ov-btn danger" id="btnBack" title="Выйти">
+      <button class="ov-btn danger" id="btnBack" data-i18n-title="overlay.back">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
           <polyline points="16 17 21 12 16 7"></polyline>
@@ -120,6 +132,7 @@ export interface Refs {
   btnJoin: HTMLButtonElement;
   homeErr: HTMLElement;
   camSelect: HTMLSelectElement;
+  localeSelect: HTMLSelectElement;
   camErr: HTMLElement;
   overlay: HTMLElement;
   ovBadge: HTMLButtonElement;
@@ -128,6 +141,9 @@ export interface Refs {
   btnBack: HTMLButtonElement;
   tiles: HTMLElement;
   toasts: HTMLElement;
+  updateBar: HTMLElement;
+  updateText: HTMLElement;
+  updateBtn: HTMLButtonElement;
 }
 
 export function mount(root: HTMLElement): Refs {
@@ -146,6 +162,7 @@ export function mount(root: HTMLElement): Refs {
     btnJoin: must("btnJoin"),
     homeErr: must("homeErr"),
     camSelect: must("camSelect"),
+    localeSelect: must("localeSelect"),
     camErr: must("camErr"),
     overlay: must("overlay"),
     ovBadge: must("ovBadge"),
@@ -154,6 +171,9 @@ export function mount(root: HTMLElement): Refs {
     btnBack: must("btnBack"),
     tiles: must("tiles"),
     toasts: must("toasts"),
+    updateBar: must("updateBar"),
+    updateText: must("updateText"),
+    updateBtn: must("updateBtn"),
   };
 }
 

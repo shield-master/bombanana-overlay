@@ -4,3 +4,6 @@ src-tauri/target
 src-tauri/gen
 .env
 .env.local
+src-tauri/updater.key
+src-tauri/updater.key.pub
+scripts/release-secrets.sh

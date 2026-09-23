@@ -1,5 +1,6 @@
 import { Peer, util, type DataConnection } from "peerjs";
 import { buildIceConfig } from "./iceConfig";
+import { t } from "../i18n";
 
 const MAX_RECONNECT_ATTEMPTS = 6;
 const BASE_RECONNECT_DELAY_MS = 1000;
@@ -16,16 +17,26 @@ export interface PeerBrokerHandlers {
   onFatal?(reason: string): void;
 }
 
-function describePeerError(err: { type?: string }): string {
+/** code — стабильный маркер причины для логики (main.ts решает, повторить ли попытку с новым кодом), а не для сравнения переведённого текста. */
+export class BrokerError extends Error {
+  constructor(
+    message: string,
+    public readonly code: "id-taken" | "not-found" | "unsupported" | "connect-failed",
+  ) {
+    super(message);
+  }
+}
+
+function describePeerError(err: { type?: string }): BrokerError {
   switch (err.type) {
     case "unavailable-id":
-      return "Этот код уже занят — попробуй ещё раз.";
+      return new BrokerError(t("net.codeTaken"), "id-taken");
     case "peer-unavailable":
-      return "Комната не найдена — проверь код.";
+      return new BrokerError(t("net.roomNotFound"), "not-found");
     case "browser-incompatible":
-      return "WebView не поддерживает нужные функции WebRTC.";
+      return new BrokerError(t("net.webrtcUnsupported"), "unsupported");
     default:
-      return "Не удалось подключиться к серверу сигналинга.";
+      return new BrokerError(t("net.signalConnectFailed"), "connect-failed");
   }
 }
 
@@ -54,14 +65,14 @@ export class PeerBroker {
     this.closedByUs = false;
     return new Promise((resolve, reject) => {
       let settled = false;
-      const fail = (reason: string) => {
+      const fail = (err: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         this.destroy();
-        reject(new Error(reason));
+        reject(err);
       };
-      const timer = setTimeout(() => fail("Не удалось подключиться к серверу сигналинга."), timeoutMs);
+      const timer = setTimeout(() => fail(new BrokerError(t("net.signalConnectFailed"), "connect-failed")), timeoutMs);
 
       const config = buildIceConfig((util.defaultConfig.iceServers as RTCIceServer[]) ?? []);
       const peer = id ? new Peer(id, { config }) : new Peer({ config });
@@ -88,7 +99,7 @@ export class PeerBroker {
         }
         // "id занят" после уже успешного open обычно означает, что наш же
         // старый сокет ещё не протух на брокере — реконнект тут не поможет.
-        if (err?.type === "unavailable-id") this.handlers.onFatal?.(reason);
+        if (err?.type === "unavailable-id") this.handlers.onFatal?.(reason.message);
       });
 
       peer.on("disconnected", () => {
@@ -97,7 +108,7 @@ export class PeerBroker {
       });
 
       peer.on("close", () => {
-        if (!this.closedByUs) this.handlers.onFatal?.("Соединение с сервером сигналинга закрыто.");
+        if (!this.closedByUs) this.handlers.onFatal?.(t("net.signalClosed"));
       });
     });
   }
@@ -110,7 +121,7 @@ export class PeerBroker {
   private scheduleReconnect(): void {
     if (this.closedByUs || !this.peer) return;
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      this.handlers.onFatal?.("Не удалось восстановить соединение с сервером сигналинга.");
+      this.handlers.onFatal?.(t("net.signalRecoverFailed"));
       return;
     }
     const attempt = this.reconnectAttempts++;

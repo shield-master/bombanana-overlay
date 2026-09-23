@@ -1,14 +1,19 @@
 import "./styles.css";
 import { listen } from "@tauri-apps/api/event";
-import { mount, toast } from "./ui/dom";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { mount, toast, type Refs } from "./ui/dom";
 import { renderUI } from "./ui/render";
 import { Store } from "./state";
 import { WindowManager } from "./window";
 import { LocalCamera } from "./media/camera";
 import { Signal, VideoMesh, generateRoomCode, normalizeRoomCode } from "./network";
+import { BrokerError } from "./network/peerBroker";
 import { watchGameState } from "./game/gameWatcher";
 import type { MediaProvider, Player, RoomMode, Screen, Tile } from "./types";
 import { isSeenByAnyone, type RoleId } from "./roles";
+import { LOCALES, LOCALE_NAMES, detectSystemLocale, getLocale, initLocale, setLocale, applyI18n, t, type Locale } from "./i18n";
+import { loadSettings, saveSettings } from "./settings";
 
 /** bombanana — обычная комната на троих; free — просто видеозвонок до 8 человек. */
 const ROOM_CAPACITY: Record<RoomMode, number> = { bombanana: 3, free: 8 };
@@ -17,7 +22,27 @@ async function bootstrap() {
   const root = document.getElementById("app");
   if (!root) throw new Error("Root element #app not found");
 
+  // 0. Настройки/язык — до первой отрисовки, чтобы карточки сразу вышли на нужном языке.
+  const settings = loadSettings();
+  initLocale(settings.locale ?? detectSystemLocale());
+
   const refs = mount(root);
+  applyI18n(root);
+
+  refs.localeSelect.innerHTML = LOCALES.map((l) => `<option value="${l}">${LOCALE_NAMES[l]}</option>`).join("");
+  refs.localeSelect.value = getLocale();
+  refs.localeSelect.onchange = () => {
+    const next = refs.localeSelect.value as Locale;
+    setLocale(next);
+    saveSettings({ locale: next });
+    applyI18n(root);
+    store.touch();
+  };
+
+  if (settings.name) refs.inName.value = settings.name;
+  refs.inName.addEventListener("change", () => saveSettings({ name: refs.inName.value.trim() }));
+  refs.camSelect.addEventListener("change", () => saveSettings({ cameraId: refs.camSelect.value || null }));
+
   const store = new Store();
   const win = new WindowManager();
   const camera = new LocalCamera();
@@ -143,14 +168,16 @@ async function bootstrap() {
         }
       }
       refs.camSelect.innerHTML = devices
-        .map((d, i) => `<option value="${d.deviceId}">${d.label || `Камера ${i + 1}`}</option>`)
+        .map((d, i) => `<option value="${d.deviceId}">${d.label || t("home.cameraFallback", { n: i + 1 })}</option>`)
         .join("");
       if (devices.length === 0) {
-        refs.camErr.textContent = "Камеры не найдены";
+        refs.camErr.textContent = t("home.camerasNotFound");
         refs.camErr.hidden = false;
+      } else if (settings.cameraId && devices.some((d) => d.deviceId === settings.cameraId)) {
+        refs.camSelect.value = settings.cameraId;
       }
     } catch {
-      refs.camErr.textContent = "Не удалось получить список камер";
+      refs.camErr.textContent = t("home.camerasListFailed");
       refs.camErr.hidden = false;
     }
   }
@@ -162,7 +189,7 @@ async function bootstrap() {
     try {
       return await camera.start(refs.camSelect.value || undefined);
     } catch (e) {
-      refs.camErr.textContent = "Ошибка доступа к камере";
+      refs.camErr.textContent = t("home.cameraAccessFailed");
       refs.camErr.hidden = false;
       return null;
     }
@@ -193,8 +220,8 @@ async function bootstrap() {
         conn.set(from, state);
         store.touch();
         if (state === "failed" && prev !== "failed") {
-          const name = store.current.players.find((p) => p.id === from)?.name ?? "Игрок";
-          toast(refs.toasts, `${name}: не удалось соединить видео`);
+          const name = store.current.players.find((p) => p.id === from)?.name ?? t("playerFallback");
+          toast(refs.toasts, t("toast.videoFailed", { name }));
         }
       },
     });
@@ -319,14 +346,14 @@ async function bootstrap() {
 
       const added = admitted.map((pid) => ({
         id: pid,
-        name: pid === store.current.myId ? store.current.name : `Игрок ${pid}`,
+        name: pid === store.current.myId ? store.current.name : `${t("playerFallback")} ${pid}`,
         role: null,
       }));
       store.update({ players: [...keep, ...added] });
       hostSync();
 
       for (const pid of rejected) {
-        signal?.kick(pid, `Лобби заполнено (макс. ${capacity} чел.)`);
+        signal?.kick(pid, t("toast.lobbyFull", { n: capacity }));
       }
     }
 
@@ -349,7 +376,7 @@ async function bootstrap() {
       case "profile": {
         if (!isHost()) break;
         const current = store.current.players;
-        const name = String(data.name ?? "Обезьяна").slice(0, 16);
+        const name = String(data.name ?? t("defaultName")).slice(0, 16);
         const exists = current.some((p) => p.id === from);
         const updated = exists
           ? current.map((p) => (p.id === from ? { ...p, name } : p))
@@ -375,15 +402,15 @@ async function bootstrap() {
   /** Общие для host()/join() колбэки восстановления связи — просто тосты, без обрыва сессии. */
   function reconnectionHandlers() {
     return {
-      onReconnecting: () => toast(refs.toasts, "Связь прервалась — переподключаюсь…"),
-      onReconnected: () => toast(refs.toasts, "Связь восстановлена"),
+      onReconnecting: () => toast(refs.toasts, t("toast.reconnecting")),
+      onReconnected: () => toast(refs.toasts, t("toast.reconnected")),
       onPeerReconnecting: (peerId: string) => {
-        const name = store.current.players.find((p) => p.id === peerId)?.name ?? "Игрок";
-        toast(refs.toasts, `${name}: связь прервалась, ждём…`);
+        const name = store.current.players.find((p) => p.id === peerId)?.name ?? t("playerFallback");
+        toast(refs.toasts, t("toast.peerReconnecting", { name }));
       },
       onPeerReconnected: (peerId: string) => {
-        const name = store.current.players.find((p) => p.id === peerId)?.name ?? "Игрок";
-        toast(refs.toasts, `${name} вернулся`);
+        const name = store.current.players.find((p) => p.id === peerId)?.name ?? t("playerFallback");
+        toast(refs.toasts, t("toast.peerReconnected", { name }));
       },
     };
   }
@@ -419,7 +446,7 @@ async function bootstrap() {
     if (!code) return;
 
     navigator.clipboard.writeText(code);
-    toast(refs.toasts, "Код скопирован!");
+    toast(refs.toasts, t("overlay.codeCopied"));
 
     if (codeRevealed) return;
 
@@ -440,7 +467,7 @@ async function bootstrap() {
   // и для свободного лобби (кнопка-сабкарточка на главном экране).
   async function hostFlow(mode: RoomMode) {
     refs.homeErr.hidden = true;
-    const name = (refs.inName.value.trim() || "Обезьяна").slice(0, 16);
+    const name = (refs.inName.value.trim() || t("defaultName")).slice(0, 16);
     // Повторный клик после неудачи не должен плодить зомби-Peer'ов на брокере.
     signal?.close();
     signal = null;
@@ -478,7 +505,7 @@ async function bootstrap() {
           await signal.host(code);
           break;
         } catch (err: any) {
-          const takenAgain = String(err?.message ?? "").includes("занят");
+          const takenAgain = err instanceof BrokerError && err.code === "id-taken";
           if (takenAgain && attempt < 3) {
             code = generateRoomCode();
             continue;
@@ -488,7 +515,7 @@ async function bootstrap() {
       }
     } catch (err: any) {
       console.error("Failed to host:", err);
-      refs.homeErr.textContent = typeof err === "string" ? err : err.message || "Не удалось создать лобби";
+      refs.homeErr.textContent = typeof err === "string" ? err : err.message || t("home.hostFailed");
       refs.homeErr.hidden = false;
     }
   }
@@ -500,11 +527,11 @@ async function bootstrap() {
   refs.btnJoin.onclick = async () => {
     refs.homeErr.hidden = true;
     const codeInput = refs.inAddr.value.trim();
-    const name = (refs.inName.value.trim() || "Обезьяна").slice(0, 16);
+    const name = (refs.inName.value.trim() || t("defaultName")).slice(0, 16);
 
     const code = normalizeRoomCode(codeInput);
     if (!code) {
-      refs.homeErr.textContent = "Укажи код комнаты";
+      refs.homeErr.textContent = t("home.codeRequired");
       refs.homeErr.hidden = false;
       return;
     }
@@ -540,7 +567,7 @@ async function bootstrap() {
       await signal.join(code);
     } catch (err: any) {
       console.error("Failed to join:", err);
-      refs.homeErr.textContent = typeof err === "string" ? err : err.message || "Не удалось подключиться";
+      refs.homeErr.textContent = typeof err === "string" ? err : err.message || t("home.joinFailed");
       refs.homeErr.hidden = false;
     }
   };
@@ -584,7 +611,7 @@ async function bootstrap() {
 
     const lobbyIds = reports.map((r) => r!.lobbyId).filter((id): id is string => id !== null);
     if (lobbyIds.length >= 2 && !lobbyIds.every((id) => id === lobbyIds[0])) {
-      toast(refs.toasts, "Похоже, вы не в одной катке BOMBANANA — раунд не запущен");
+      toast(refs.toasts, t("toast.roundNotSynced"));
       roundReports.clear();
       return;
     }
@@ -629,6 +656,36 @@ async function bootstrap() {
     const editable = el?.closest("input, textarea, [contenteditable='true']");
     if (!editable) e.preventDefault();
   });
+
+  void checkForUpdates(refs);
+}
+
+// 13. Автообновление — тихая проверка при старте. Не блокирует запуск: если
+// GitHub недоступен или обновлений нет, просто ничего не показываем.
+async function checkForUpdates(refs: Refs) {
+  try {
+    const update = await check();
+    if (!update) return;
+
+    refs.updateText.textContent = t("update.available", { version: update.version });
+    refs.updateBar.hidden = false;
+
+    refs.updateBtn.onclick = async () => {
+      refs.updateBtn.disabled = true;
+      refs.updateBtn.textContent = t("update.downloading");
+      try {
+        await update.downloadAndInstall();
+        await relaunch();
+      } catch (err) {
+        console.error("update install failed", err);
+        refs.updateBtn.disabled = false;
+        refs.updateBtn.textContent = t("update.installBtn");
+        refs.updateText.textContent = t("update.failed");
+      }
+    };
+  } catch (err) {
+    console.error("update check failed", err);
+  }
 }
 
 bootstrap().catch(console.error);
