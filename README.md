@@ -1,105 +1,161 @@
+<div align="center">
+
+<img src="app-icon.png" width="96" height="96" alt="Bombanana Overlay icon">
+
 # Bombanana Overlay
 
-Оверлей с вебкамерами для игры в «три обезьяны» на троих. Только Windows.
-Без микрофона: общаться можно жестами в камеру и быстрыми сигналами-эмодзи.
+A lightweight always-on-top webcam overlay for playing **BOMBANANA** with friends —
+plus a built-in free-form video call room for everyone else. Windows only.
 
-## Как это работает
+![Home screen](docs/screenshots/home-en.png)
 
-Один игрок нажимает **Поднять лобби** — прямо внутри приложения стартует
-WebSocket-релей, и приложение показывает адрес вида `192.168.0.14:47821`.
-Двое других вбивают этот адрес и заходят. Через релей идёт только служебная
-переписка; видео летит напрямую между участниками (WebRTC mesh, 3 канала),
-так что хост не становится узким местом.
+</div>
 
-Когда все трое выбрали роль, хост жмёт **Начать**. Окно превращается в
-компактный оверлей поверх игры: по умолчанию мышь остаётся у игры, клики
-проваливаются сквозь оверлей — как в Discord.
+## What it does
 
-## Роли
+Bombanana Overlay puts a small, click-through webcam strip on top of the game so
+you and up to two friends can see each other while you play — no Discord call,
+no second monitor, no alt-tabbing. One person hosts, shares a short room code,
+and everyone connects directly to each other over WebRTC.
 
-Микрофона нет, поэтому каналов связи ровно два: видео (жесты) и сигналы-эмодзи.
-Роли отбирают по одному каналу:
+It also doubles as a **Free lobby**: a plain group video call for up to 8 people,
+completely decoupled from the game — handy for just hanging out on camera.
 
-| Роль | Видит чужие камеры | Её камера видна другим | Получает сигналы |
+- 🎥 **Direct peer-to-peer video**, no server relaying camera streams — signaling
+  goes through a lightweight star topology (host relays only small JSON messages),
+  video is a full WebRTC mesh between every participant
+- 🔁 **Auto-reconnect** — zombie connections get caught by a heartbeat, guests
+  quietly rejoin under the same identity after a network hiccup, the host gives
+  a grace period before treating anyone as gone
+- 🎮 **Live game sync** — watches BOMBANANA's own log file to detect when a
+  round starts/ends and which role each player got, no manual clicking required
+- 🙈 **Role-based camera visibility** — who can see whose camera (and with
+  which visual filter) follows the game's own role rules automatically
+- 🌐 **7 languages** — auto-detected from your system, switchable anytime
+- ⬆️ **Auto-updates** — checks for new versions on startup and installs them
+  in one click
+- 🖱️ **Click-through overlay** — the game keeps mouse focus by default, just
+  like a Discord overlay
+
+## Free lobby vs. a BOMBANANA lobby
+
+<div align="center">
+
+![Free lobby card](docs/screenshots/free-lobby-card.png)
+
+</div>
+
+| | Regular lobby | Free lobby |
+|---|---|---|
+| Players | up to 3 | up to 8 |
+| Tied to the game | yes — roles, rounds, filters | no — plain video call |
+| Use it for | playing BOMBANANA together | just talking on camera |
+
+Both run on the exact same overlay and connection code — free lobby simply
+skips everything game-specific.
+
+## Roles
+
+BOMBANANA assigns each of the three players a role for the round, and the
+overlay mirrors that role's camera rules automatically — nobody has to toggle
+anything by hand:
+
+| Role | Sees other cameras | Camera visible to others | Gets signals |
 |---|---|---|---|
-| 🙈 Слепая | нет (и себя тоже) | да | да |
-| 🙊 Немая | да | нет | да |
-| 🙉 Глухая | да | да | нет |
+| 🙈 Blind | only the Deaf player, in outline vision | yes | yes |
+| 🙊 Mute | everyone | no | yes |
+| 🙉 Deaf | nobody (just themself) | yes, to both | no |
 
-Это адаптация «не вижу / не говорю / не слышу» под безмикрофонный формат:
-«сказать» = показать жестом в камеру, «услышать» = получить сигнал.
-Вся таблица лежит в [`src/roles.ts`](src/roles.ts) — правишь её, меняется механика.
-Ограничения снимаются на стороне клиента (у немой видеотрек выключается
-в источнике), так что это игра на доверии, а не античит.
+The "outline vision" the Blind role gets is a real-time edge-detection filter
+(SVG `feConvolveMatrix`) applied live to the video feed — not just a plain
+grayscale filter. Camera streams that nobody is allowed to see are muted at
+the source, not just hidden in the UI. The whole ruleset lives in
+[`src/roles.ts`](src/roles.ts) — change the table, change the mechanic.
 
-## Горячие клавиши
+## Languages
 
-| Клавиши | Что делает |
+![Language switcher](docs/screenshots/lang-switch.gif)
+
+English, Russian, Spanish, French, German, Chinese and Japanese, picked
+automatically from your OS locale on first launch. Your choice — along with
+your display name and selected camera — is remembered for next time.
+
+## Hotkeys
+
+| Keys | What it does |
 |---|---|
-| `Ctrl+Shift+O` | забрать мышь у игры / вернуть её игре |
-| `Ctrl+Shift+H` | спрятать и вернуть оверлей |
+| `Ctrl+Shift+O` | toggle click-through — grab the mouse from the game, or give it back |
+| `Ctrl+Shift+H` | show/hide the overlay entirely |
 
-Сигналы-эмодзи жмутся мышью, поэтому сначала `Ctrl+Shift+O`.
-
-## Запуск
+## Getting started
 
 ```bash
 npm install
 npm start
 ```
 
-Сборка инсталлятора (NSIS, ставится в профиль пользователя, без админа):
+Build a Windows installer (NSIS, installs to the user profile, no admin needed):
 
 ```bash
 npm run release
 ```
 
-Готовый `.exe` появится в `src-tauri/target/release/bundle/nsis/`.
+The signed `.exe` lands in `src-tauri/target/release/bundle/nsis/`.
 
-Тест релея (проверяет выдачу id, рассылку списка участников и пересылку —
-без GUI и без камеры):
+Run the Rust-side tests (game log parsing, connection protocol):
 
 ```bash
 cd src-tauri && cargo test --lib
 ```
 
-## Что нужно знать перед игрой
+## Good to know before you play
 
-- **Брандмауэр.** При первом запуске хоста Windows спросит про доступ к сети —
-  надо разрешить для частной сети, иначе остальные не подключатся.
-- **Игра должна идти в окне без рамки (borderless).** Оверлей — обычное
-  always-on-top окно, поверх эксклюзивного полноэкранного режима его не видно.
-  Это ограничение любого оверлея без перехвата DirectX.
-- **Через интернет.** По локальной сети работает сразу. Снаружи нужно пробросить
-  порт `47821` на роутере хоста; WebRTC пойдёт через STUN, но при симметричном
-  NAT у обоих понадобится TURN — его в MVP нет.
-- **Камера.** Разрешение WebView2 выдаётся автоматически
-  (`--use-fake-ui-for-media-stream` в `tauri.conf.json`), настоящая камера при этом
-  не подменяется. Если камер несколько, выбрать можно в лобби.
+- **Firewall.** Windows will ask about network access the first time someone
+  hosts — allow it for private networks or guests won't be able to connect.
+- **Borderless window.** The overlay is a normal always-on-top window; it
+  can't draw over an exclusive fullscreen game, only borderless/windowed.
+- **Works over the internet out of the box.** Connections try direct P2P
+  first and fall back to a TURN relay automatically when a strict NAT/firewall
+  is in the way — no port forwarding needed.
+- **Camera.** If you have more than one, pick which one to use right on the
+  home screen before hosting or joining.
 
-## Устройство
+## Architecture
 
 ```
 src/
-  main.ts      состояние, правила, отрисовка
-  net.ts       клиент релея
-  rtc.ts       WebRTC mesh
-  roles.ts     роли и таблица эффектов
-  ui.ts        разметка и плитки участников
-  styles.css
+  main.ts             bootstrap, room/round state machine, wiring
+  i18n.ts              translations + locale detection/switching
+  settings.ts          persisted name/locale/camera (localStorage)
+  roles.ts              role visibility rules
+  state.ts, types.ts    app state store and shared types
+  config.ts             overlay sizing/layout constants
+  media/camera.ts       local camera capture
+  game/gameWatcher.ts    listens for round/lobby events from Rust
+  network/
+    signal.ts           room signaling — star topology through the host
+    videoMesh.ts         WebRTC full mesh (direct video between every peer)
+    peerBroker.ts         PeerJS connection lifecycle + auto-reconnect
+    heartbeat.ts          detects dead connections the browser doesn't close
+    identity.ts, roomCode.ts, iceConfig.ts, protocol.ts
+  ui/
+    dom.ts               markup + DOM refs
+    render.ts             state → DOM rendering
 src-tauri/src/
-  lib.rs       команды окна, режим оверлея, горячие клавиши
-  signaling.rs встроенный WebSocket-релей
+  lib.rs                window/overlay commands, hotkeys, power-throttling fix
+  commands/game_log.rs   watches BOMBANANA's log for round/role/lobby events
+  commands/window.rs     click-through + overlay window commands
 ```
 
-Состояние комнаты держит хост: он один раздаёт роли и объявляет фазу, остальные
-применяют его снимок. Релей на Rust намеренно тупой — раздаёт id, рассылает
-список участников и пересылает JSON, не зная про игру ничего.
+The host holds the authoritative room state (who's in, whose turn, what
+role); everyone else applies the snapshots it broadcasts. Signaling rides on
+a free public PeerJS broker — no server to run or maintain — while actual
+video never touches it.
 
-## Чего в MVP нет
+## Current limitations
 
-- Нет TURN — жёсткий NAT с обеих сторон не пробьётся.
-- Нет таймера раунда и счёта.
-- Сигналы нельзя отправить, не забрав мышь (нужны были бы глобальные хоткеи).
-- Роли эксклюзивны и рассчитаны ровно на троих; вчетвером четвёртый останется
-  без роли. Вдвоём начать можно — удобно для проверки связи.
+- Rounds need exactly 3 players in a regular lobby; a 4th stays without a
+  role. Two players can still start, useful for testing the connection.
+- No round timer or score tracking.
+- Free lobby caps out at 8 — the 9th person to try gets turned away with a
+  message explaining why.
