@@ -250,6 +250,7 @@ input:focus,
 .card-sub-text {
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 1px;
   min-width: 0;
 }
